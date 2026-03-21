@@ -12,8 +12,6 @@ A lightweight, Layer-3 mesh networking protocol built on top of ESP-NOW for ESP3
 ## 🛠 Architecture
 The network consists of a **Coordinator** (the bridge) and multiple **Nodes** (Relays or End-devices).
 
-
-
 ### Packet Structure (Binary)
 The library uses a 112-byte packed struct:
 - `Type`: 0x12 (PING), 0x13 (PONG), 0x15 (DATA).
@@ -22,8 +20,9 @@ The library uses a 112-byte packed struct:
 - `AppId`: Application multiplexer (e.g., 1 for Text, 2 for Raw Hex).
 - `Payload`: 64-byte raw data buffer.
 
-## 📡 API Endpoints (Coordinator)
-The Coordinator exposes a REST API on Port 80:
+## 📡 API Endpoints (Pseudo - Coordinator)
+The Coordinator (coordinator.cpp) is used to send messages as a test. It was not meant for production but as a capanbnility pilot. 
+It exposes a REST API on Port 80:
 
 | Endpoint | Method | Description |
 | :--- | :--- | :--- |
@@ -31,10 +30,20 @@ The Coordinator exposes a REST API on Port 80:
 | `/api/discover` | GET | Broadcast a PING to the whole mesh |
 | `/api/nodes` | GET | View the current Routing Table (Known Nodes) |
 
+## 📡 EspNow -> MQTT Coordinator
+(coming soon)
+
 ## 💻 Installation
 1. Clone to your `lib/` folder.
 2. In `platformio.ini`, ensure you use the `pioarduino` platform for ESP32-C6 support.
 3. Define your `secrets.h` in the `include/` folder for Wi-Fi credentials.
+
+## Development
+- **Core Logic:** C++17 (Arduino/ESP-IDF)
+- **Coordination:** ESP32-C6 (RISC-V)
+- **Bridge Protocol:** MQTT 3.1.1 via PubSubClient
+- **Serialization:** ArduinoJson 7.x
+- **Development:** PlatformIO on Fedora 43
 
 ## ⚖️ License
 Licensed under the Apache License, Version 2.0.

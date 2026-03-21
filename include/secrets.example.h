@@ -1,6 +1,9 @@
-// include/secrets.example.h
-#pragma once
+#ifndef SECRETS_H
+#define SECRETS_H
 
-// RENAME THIS FILE TO secrets.h AND ADD YOUR CREDENTIALS
-#define WIFI_SSID "YOUR_WIFI_SSID"
-#define WIFI_PASS "YOUR_WIFI_PASSWORD"
+#define WIFI_SSID "YOUR SSID HERE"
+#define WIFI_PASS "YOUR PASSWORD HERE"
+
+#define MQTT_BROKER "MQTT BROKER IP HERE" // Your Home Assistant or Mosquitto IP
+#define MQTT_PORT   1883
+#endif

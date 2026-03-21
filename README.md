@@ -38,6 +38,12 @@ It exposes a REST API on Port 80:
 2. In `platformio.ini`, ensure you use the `pioarduino` platform for ESP32-C6 support.
 3. Define your `secrets.h` in the `include/` folder for Wi-Fi credentials.
 
+## 🛠 Build
+To build the different examples
+'''
+pio run -e coordinator_c6 -t upload -t monitor
+'''
+
 ## Development
 - **Core Logic:** C++17 (Arduino/ESP-IDF)
 - **Coordination:** ESP32-C6 (RISC-V)

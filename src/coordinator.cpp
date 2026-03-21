@@ -3,11 +3,41 @@
 #include <WebServer.h>
 #include <esp_wifi.h>
 #include <ArduinoJson.h>
+#include "secrets.h"
 #include "UniversalMesh.h"
 
-// --- CONFIGURATION ---
-const char* ssid = "scn";
-const char* password = "Gagmxyto0815";
+
+
+// --- ROUTING TABLE ---
+#define MAX_NODES 20
+struct KnownNode {
+  uint8_t mac[6];
+  unsigned long lastSeen;
+  bool active;
+};
+KnownNode meshNodes[MAX_NODES];
+
+// Function to register or update a node in the table
+void updateNodeTable(uint8_t* mac) {
+  // Check if we already know this node
+  for (int i = 0; i < MAX_NODES; i++) {
+    if (meshNodes[i].active && memcmp(meshNodes[i].mac, mac, 6) == 0) {
+      meshNodes[i].lastSeen = millis(); // Update timestamp
+      return;
+    }
+  }
+  // If new, find an empty slot and add it
+  for (int i = 0; i < MAX_NODES; i++) {
+    if (!meshNodes[i].active) {
+      memcpy(meshNodes[i].mac, mac, 6);
+      meshNodes[i].lastSeen = millis();
+      meshNodes[i].active = true;
+      Serial.println("[ROUTING] New Node Discovered and Added to Table!");
+      return;
+    }
+  }
+}
+
 
 WebServer server(80);
 UniversalMesh mesh;
@@ -15,6 +45,14 @@ UniversalMesh mesh;
 // --- RECEIVE CALLBACK ---
 // Triggers when the mesh library catches a packet meant for us (or broadcast)
 void onMeshMessage(MeshPacket* packet, uint8_t* senderMac) {
+  // 1. Immediately log the node in the routing table
+  updateNodeTable(packet->srcMac);
+
+  // 2. Process the packet types
+  if (packet->type == MESH_TYPE_PONG) {
+    Serial.printf("[DISCOVERY] PONG received from node!\n");
+  } 
+  else if (packet->type == MESH_TYPE_DATA) {
   JsonDocument doc;
   
   doc["type"] = packet->type;
@@ -38,6 +76,7 @@ void onMeshMessage(MeshPacket* packet, uint8_t* senderMac) {
   serializeJson(doc, Serial);
   Serial.println();
 }
+}
 
 void setup() {
   Serial.begin(115200);
@@ -50,8 +89,8 @@ void setup() {
 
   // 1. Connect to Home Wi-Fi
   WiFi.mode(WIFI_STA);
-  WiFi.begin(ssid, password);
-  Serial.printf("[WIFI] Connecting to %s\n", ssid);
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  Serial.printf("[WIFI] Connecting to %s\n", WIFI_SSID);
   
   while (WiFi.status() != WL_CONNECTED) { 
     delay(500); 
@@ -114,6 +153,30 @@ server.on("/api/tx", HTTP_POST, []() {
     
     // Return immediately. The PONGs will stream out via Serial as they arrive.
     server.send(200, "application/json", "{\"status\":\"discovery_initiated\"}");
+  });
+
+  server.on("/api/nodes", HTTP_GET, []() {
+    JsonDocument doc;
+    JsonArray nodesArray = doc["nodes"].to<JsonArray>();
+
+    for (int i = 0; i < MAX_NODES; i++) {
+      if (meshNodes[i].active) {
+        JsonObject nodeObj = nodesArray.add<JsonObject>();
+        
+        char macStr[18];
+        sprintf(macStr, "%02X:%02X:%02X:%02X:%02X:%02X", 
+                meshNodes[i].mac[0], meshNodes[i].mac[1], meshNodes[i].mac[2],
+                meshNodes[i].mac[3], meshNodes[i].mac[4], meshNodes[i].mac[5]);
+        
+        nodeObj["mac"] = macStr;
+        // Calculate seconds since we last heard from it
+        nodeObj["last_seen_seconds_ago"] = (millis() - meshNodes[i].lastSeen) / 1000; 
+      }
+    }
+    
+    String response;
+    serializeJson(doc, response);
+    server.send(200, "application/json", response);
   });
 
   server.begin();

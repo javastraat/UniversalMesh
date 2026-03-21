@@ -5,8 +5,7 @@
 #include "UniversalMesh.h"
 
 // --- CONFIGURATION ---
-// MUST match the Master's operating channel!
-#define WIFI_CHANNEL 6 
+#define WIFI_CHANNEL 6 // Matches the Master's TechInc channel
 
 // HW364A I2C Pins
 #define OLED_SDA 14
@@ -18,71 +17,69 @@ Adafruit_SSD1306 display(128, 64, &Wire, -1);
 // WDT-Safe Buffer for OLED updates
 volatile bool newDataReady = false;
 uint8_t lastAppId = 0;
-char lastPayload[65] = {0};
+char lastPayload[129] = {0}; // Expanded buffer in case of long Hex strings
 
 // --- RECEIVE CALLBACK ---
-// Triggers when the mesh library catches a packet meant for us (or broadcast)
 void onMeshMessage(MeshPacket* packet, uint8_t* senderMac) {
-  // Only update the screen for Data payloads
+  // We only care about DATA packets (PINGs are handled silently by the library now)
   if (packet->type == MESH_TYPE_DATA) {
     lastAppId = packet->appId;
-    memset(lastPayload, 0, sizeof(lastPayload)); // Clear old payload
+    memset(lastPayload, 0, sizeof(lastPayload));
     
     if (packet->payloadLen > 0) {
-      memcpy(lastPayload, packet->payload, packet->payloadLen);
+      if (packet->appId == 1) {
+        // Mode 1: Decode as ASCII Text
+        memcpy(lastPayload, packet->payload, packet->payloadLen);
+      } else {
+        // Mode 2: Display as Raw Hex String
+        for (int i = 0; i < packet->payloadLen; i++) {
+          char hex[3];
+          sprintf(hex, "%02X", packet->payload[i]);
+          strcat(lastPayload, hex);
+        }
+      }
     }
     
-    // Flag the main loop to update the display
     newDataReady = true;
   }
 }
 
 void setup() {
   Serial.begin(115200);
-  Serial.println("\n=== MESH GATEWAY DISPLAY BOOTING ===");
   
-  // 1. Initialize Display
   Wire.begin(OLED_SDA, OLED_SCL);
   if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
     Serial.println(F("SSD1306 allocation failed"));
-    for(;;); // Don't proceed, loop forever
+    for(;;); 
   }
   
   display.clearDisplay();
   display.setTextColor(WHITE);
   display.setTextSize(1);
-  
   display.setCursor(0,0);
   display.println("MESH GATEWAY");
   display.printf("CHANNEL: %d\n", WIFI_CHANNEL);
   display.println("INITIALIZING...");
   display.display();
 
-  // 2. Initialize Mesh
+  // Explicitly disconnect Wi-Fi before starting the mesh (The Stability Fix)
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect();
+
   if (mesh.begin(WIFI_CHANNEL)) {
-    Serial.println("[SYSTEM] Gateway Radio Online");
     mesh.onReceive(onMeshMessage);
-    
     display.clearDisplay();
     display.setCursor(0,0);
     display.println("MESH GATEWAY");
     display.println("ONLINE & LISTENING");
     display.display();
-  } else {
-    Serial.println("[ERROR] Mesh Initialization Failed!");
-    display.println("RADIO ERROR!");
-    display.display();
   }
 }
 
 void loop() {
-  // Keep the mesh library running in the background
   mesh.update();
   
-  // Safely update the screen outside of the hardware interrupt
   if (newDataReady) {
-    Serial.printf("[DISPLAY] Updating screen with AppId: %02X\n", lastAppId);
-    
     display.clearDisplay();
     display.setCursor(0,0);
     display.println(">> INCOMING MSG <<");
@@ -96,6 +93,5 @@ void loop() {
     newDataReady = false;
   }
   
-  // Small delay to keep the ESP8266 Watchdog Timer happy
   delay(10);
 }

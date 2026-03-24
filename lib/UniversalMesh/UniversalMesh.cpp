@@ -85,8 +85,8 @@ void UniversalMesh::espNowRecvWrapper(uint8_t *mac, uint8_t *data, uint8_t len) 
   if (_instance) _instance->handleReceive(mac, data, len);
 }
 #elif defined(ESP32)
-void UniversalMesh::espNowRecvWrapper(const uint8_t *mac, const uint8_t *data, int len) {
-  if (_instance) _instance->handleReceive((uint8_t*)mac, (uint8_t*)data, len);
+void UniversalMesh::espNowRecvWrapper(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
+  if (_instance) _instance->handleReceive((uint8_t*)info->src_addr, (uint8_t*)data, len);
 }
 #endif
 

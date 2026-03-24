@@ -1,13 +1,16 @@
 #include <Arduino.h>
 #include <WiFi.h>
-#include <WebServer.h>
+#include <ESPAsyncWebServer.h>
 #include <esp_wifi.h>
 #include <ArduinoJson.h>
+#ifdef HAS_RGB_LED
 #include <Adafruit_NeoPixel.h>
+#endif
 #include "secrets.h"
 #include "UniversalMesh.h"
 
 // --- RGB LED ---
+#ifdef HAS_RGB_LED
 constexpr uint8_t LED_PIN  = 8;
 Adafruit_NeoPixel rgbLed(1, LED_PIN, NEO_GRB + NEO_KHZ800);
 
@@ -82,6 +85,7 @@ void ledUpdate() {
     }
   }
 }
+#endif // HAS_RGB_LED
 
 
 
@@ -116,13 +120,15 @@ void updateNodeTable(uint8_t* mac) {
 }
 
 
-WebServer server(80);
+AsyncWebServer server(80);
 UniversalMesh mesh;
 
 // --- RECEIVE CALLBACK ---
 // Triggers when the mesh library catches a packet meant for us (or broadcast)
 void onMeshMessage(MeshPacket* packet, uint8_t* senderMac) {
+#ifdef HAS_RGB_LED
   ledFlash(LED_RX_BLINK);
+#endif
 
   // 1. Immediately log the node in the routing table
   updateNodeTable(packet->srcMac);
@@ -164,9 +170,11 @@ void setup() {
   uint32_t t = millis();
   while (!Serial && (millis() - t) < 5000) { delay(10); }
   
+#ifdef HAS_RGB_LED
   rgbLed.begin();
   rgbLed.show();
   ledTimer = millis();
+#endif
 
   Serial.println("\n=== MESH MASTER BRIDGE INITIALIZING ===");
 
@@ -178,22 +186,27 @@ void setup() {
   constexpr unsigned long WIFI_TIMEOUT_MS = 15000;
   unsigned long wifiStart = millis();
   while (WiFi.status() != WL_CONNECTED && (millis() - wifiStart) < WIFI_TIMEOUT_MS) {
-    // Blink green (blocking phase — inline is fine)
+#ifdef HAS_RGB_LED
     setColor(COLOR_GREEN); delay(300);
     setColor(COLOR_OFF);   delay(300);
+#endif
     Serial.print(".");
   }
 
   if (WiFi.status() == WL_CONNECTED) {
     esp_wifi_set_ps(WIFI_PS_NONE);
+#ifdef HAS_RGB_LED
     ledState = LED_CONNECTED;
     setColor(COLOR_GREEN);
+#endif
     uint8_t chan = WiFi.channel();
     Serial.printf("\n[WIFI] Connected! API IP: %s\n", WiFi.localIP().toString().c_str());
     Serial.printf("[WIFI] Operating Channel: %d\n", chan);
   } else {
+#ifdef HAS_RGB_LED
     ledState = LED_NO_WIFI;
     setColor(COLOR_RED);
+#endif
     Serial.println("\n[WIFI] Connection failed! Running offline.");
   }
 
@@ -208,73 +221,71 @@ void setup() {
   }
 
   // 3. Setup REST API Endpoint for Injecting Packets
-server.on("/api/tx", HTTP_POST, []() {
-    if (server.hasArg("plain")) {
+  server.on("/api/tx", HTTP_POST,
+    [](AsyncWebServerRequest *request) {},
+    nullptr,
+    [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
       JsonDocument doc;
-      deserializeJson(doc, server.arg("plain"));
-      
+      deserializeJson(doc, data, len);
+
       uint8_t destMac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
       const char* macStr = doc["dest"];
       if (macStr) {
         int temp[6];
         if (sscanf(macStr, "%x:%x:%x:%x:%x:%x", &temp[0], &temp[1], &temp[2], &temp[3], &temp[4], &temp[5]) == 6) {
-          for(int i=0; i<6; i++) destMac[i] = (uint8_t)temp[i];
+          for (int i = 0; i < 6; i++) destMac[i] = (uint8_t)temp[i];
         }
       }
 
       uint8_t ttl = doc["ttl"] | 4;
       uint8_t appId = doc["appId"] | 0x00;
       String payloadHex = doc["payload"] | "";
-      
+
       uint8_t payloadBytes[64] = {0};
       uint8_t payloadLen = payloadHex.length() / 2;
-      if (payloadLen > 64) payloadLen = 64; 
-      
+      if (payloadLen > 64) payloadLen = 64;
+
       for (int i = 0; i < payloadLen; i++) {
         String byteString = payloadHex.substring(i * 2, i * 2 + 2);
         payloadBytes[i] = (uint8_t) strtol(byteString.c_str(), NULL, 16);
       }
-      
-      // Hardcoded to MESH_TYPE_DATA (0x15)
+
       mesh.send(destMac, MESH_TYPE_DATA, appId, payloadBytes, payloadLen, ttl);
+#ifdef HAS_RGB_LED
       ledFlash(LED_TX_BLINK);
-      server.send(200, "application/json", "{\"status\":\"data_sent\"}");
+#endif
+      request->send(200, "application/json", "{\"status\":\"data_sent\"}");
     }
-  });
+  );
 
   // 2. Discovery Endpoint
-  server.on("/api/discover", HTTP_GET, []() {
+  server.on("/api/discover", HTTP_GET, [](AsyncWebServerRequest *request) {
     uint8_t broadcastMac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-    
-    // Broadcast a PING (0x12) to the whole network
     mesh.send(broadcastMac, MESH_TYPE_PING, 0x00, nullptr, 0, 4);
-    
-    // Return immediately. The PONGs will stream out via Serial as they arrive.
-    server.send(200, "application/json", "{\"status\":\"discovery_initiated\"}");
+    request->send(200, "application/json", "{\"status\":\"discovery_initiated\"}");
   });
 
-  server.on("/api/nodes", HTTP_GET, []() {
+  server.on("/api/nodes", HTTP_GET, [](AsyncWebServerRequest *request) {
     JsonDocument doc;
     JsonArray nodesArray = doc["nodes"].to<JsonArray>();
 
     for (int i = 0; i < MAX_NODES; i++) {
       if (meshNodes[i].active) {
         JsonObject nodeObj = nodesArray.add<JsonObject>();
-        
+
         char macStr[18];
-        sprintf(macStr, "%02X:%02X:%02X:%02X:%02X:%02X", 
+        sprintf(macStr, "%02X:%02X:%02X:%02X:%02X:%02X",
                 meshNodes[i].mac[0], meshNodes[i].mac[1], meshNodes[i].mac[2],
                 meshNodes[i].mac[3], meshNodes[i].mac[4], meshNodes[i].mac[5]);
-        
+
         nodeObj["mac"] = macStr;
-        // Calculate seconds since we last heard from it
-        nodeObj["last_seen_seconds_ago"] = (millis() - meshNodes[i].lastSeen) / 1000; 
+        nodeObj["last_seen_seconds_ago"] = (millis() - meshNodes[i].lastSeen) / 1000;
       }
     }
-    
+
     String response;
     serializeJson(doc, response);
-    server.send(200, "application/json", response);
+    request->send(200, "application/json", response);
   });
 
   server.begin();
@@ -282,7 +293,6 @@ server.on("/api/tx", HTTP_POST, []() {
 }
 
 void loop() {
-  server.handleClient();
   mesh.update();
 
   // Temporary USB Serial Bypass for testing
@@ -294,9 +304,13 @@ void loop() {
       uint8_t destMac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
       const char* payload = "Serial Test Pkt";
       mesh.send(destMac, MESH_TYPE_DATA, 0x01, (const uint8_t*)payload, strlen(payload), 4);
+#ifdef HAS_RGB_LED
       ledFlash(LED_TX_BLINK);
+#endif
     }
   }
 
+#ifdef HAS_RGB_LED
   ledUpdate();
+#endif
 }

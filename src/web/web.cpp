@@ -49,11 +49,11 @@ static const char HTML[] PROGMEM = R"rawliteral(
   <title>UniversalMesh</title>
   <style>
     *{box-sizing:border-box;margin:0;padding:0}
-    body{font-family:monospace;background:#0d1117;color:#c9d1d9;padding:16px}
+    body{font-family:monospace;background:#0d1117;color:#c9d1d9;padding:16px;transition:background .2s,color .2s}
     h1{color:#58a6ff;margin-bottom:16px;font-size:1.3em;display:flex;align-items:center;gap:10px}
     h2{color:#8b949e;font-size:0.78em;text-transform:uppercase;letter-spacing:.1em;margin-bottom:10px}
     .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;margin-bottom:12px}
-    .card{background:#161b22;border:1px solid #30363d;border-radius:6px;padding:14px}
+    .card{background:#161b22;border:1px solid #30363d;border-radius:6px;padding:14px;transition:background .2s,border-color .2s}
     .row{display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-bottom:1px solid #21262d;font-size:0.83em}
     .row:last-child{border-bottom:none}
     .lbl{color:#8b949e}
@@ -66,10 +66,22 @@ static const char HTML[] PROGMEM = R"rawliteral(
     .dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#3fb950;margin-right:6px}
     .sub{color:#484f58;font-size:0.78em;margin-top:6px}
     .empty{color:#484f58;font-size:0.82em;padding:8px 0}
+    .theme-btn{margin-left:auto;background:none;border:1px solid #30363d;border-radius:6px;padding:4px 8px;cursor:pointer;font-size:1em;line-height:1}
+    body.light{background:#f6f8fa;color:#24292f}
+    body.light .card{background:#ffffff;border-color:#d0d7de}
+    body.light .row{border-bottom-color:#d0d7de}
+    body.light .lbl{color:#57606a}
+    body.light .val{color:#24292f}
+    body.light th{color:#57606a;border-bottom-color:#d0d7de}
+    body.light td{color:#24292f;border-bottom-color:#eaeef2}
+    body.light h2{color:#57606a}
+    body.light .sub{color:#8c959f}
+    body.light .empty{color:#8c959f}
+    body.light .theme-btn{border-color:#d0d7de}
   </style>
 </head>
 <body>
-  <h1><span class="dot"></span>UniversalMesh Coordinator</h1>
+  <h1><span class="dot"></span>UniversalMesh Coordinator<button class="theme-btn" onclick="toggleTheme()" id="theme-btn" title="Toggle dark/light mode">🌙</button></h1>
   <div class="grid">
     <div class="card">
       <h2>ESP</h2>
@@ -114,6 +126,15 @@ static const char HTML[] PROGMEM = R"rawliteral(
     </div>
   </div>
   <script>
+    function toggleTheme(){
+      const light=document.body.classList.toggle('light');
+      document.getElementById('theme-btn').textContent=light?'☀️':'🌙';
+      localStorage.setItem('theme',light?'light':'dark');
+    }
+    if(localStorage.getItem('theme')==='light'){
+      document.body.classList.add('light');
+      document.getElementById('theme-btn').textContent='☀️';
+    }
     const PAGE_SIZE=10;
     let logPage_=0;
     let logPackets_=[];

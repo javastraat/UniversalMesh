@@ -66,19 +66,23 @@ static const char HTML[] PROGMEM = R"rawliteral(
     <div class="card">
       <h2>ESP</h2>
       <div class="row"><span class="lbl">Chip</span><span class="val" id="chip">-</span></div>
+      <div class="row"><span class="lbl">Cores</span><span class="val" id="cores">-</span></div>
       <div class="row"><span class="lbl">CPU</span><span class="val" id="cpu">-</span></div>
+      <div class="row"><span class="lbl">Flash</span><span class="val" id="flash">-</span></div>
       <div class="row"><span class="lbl">Free Heap</span><span class="val" id="heap">-</span></div>
+      <div class="row"><span class="lbl">MAC</span><span class="val" id="esp-mac">-</span></div>
       <div class="row"><span class="lbl">Uptime</span><span class="val" id="uptime">-</span></div>
     </div>
     <div class="card">
       <h2>WiFi</h2>
       <div class="row"><span class="lbl">SSID</span><span class="val" id="ssid">-</span></div>
       <div class="row"><span class="lbl">IP</span><span class="val" id="ip">-</span></div>
+      <div class="row"><span class="lbl">Gateway</span><span class="val" id="gw">-</span></div>
       <div class="row"><span class="lbl">RSSI</span><span class="val" id="rssi">-</span></div>
       <div class="row"><span class="lbl">Channel</span><span class="val" id="ch">-</span></div>
     </div>
     <div class="card">
-      <h2>Mesh Nodes</h2>
+      <h2>Mesh Nodes <button id="ping-all-btn" onclick="pingAll()" style="font-family:monospace;font-size:0.75em;padding:2px 8px;border-radius:3px;border:1px solid #30363d;background:#21262d;color:#8b949e;cursor:pointer;float:right">ping all</button></h2>
       <div id="nodes-empty" class="empty">No nodes discovered yet</div>
       <table id="nodes-table" style="display:none">
         <thead><tr><th>MAC</th><th>Last Seen</th></tr></thead>
@@ -96,6 +100,14 @@ static const char HTML[] PROGMEM = R"rawliteral(
     <div class="sub" id="tick"></div>
   </div>
   <script>
+    function pingAll(){
+      const btn=document.getElementById('ping-all-btn');
+      btn.textContent='...';btn.disabled=true;
+      fetch('/api/discover').then(()=>{
+        btn.textContent='sent!';
+        setTimeout(()=>{btn.textContent='ping all';btn.disabled=false;},2000);
+      }).catch(()=>{btn.textContent='ping all';btn.disabled=false;});
+    }
     function fmtUptime(ms){
       let s=Math.floor(ms/1000),m=Math.floor(s/60),h=Math.floor(m/60),d=Math.floor(h/24);
       return d?d+'d '+h%24+'h':h?h+'h '+m%60+'m':m?m+'m '+s%60+'s':s+'s';
@@ -109,14 +121,18 @@ static const char HTML[] PROGMEM = R"rawliteral(
           fetch('/api/nodes').then(r=>r.json()),
           fetch('/api/log').then(r=>r.json())
         ]);
-        set('chip', st.chip);
-        set('cpu',  st.cpu_mhz+' MHz');
-        set('heap', fmtBytes(st.free_heap));
-        set('uptime', fmtUptime(st.uptime_ms));
-        set('ssid', st.ssid);
-        set('ip',   st.ip);
-        set('rssi', st.rssi+' dBm');
-        set('ch',   st.channel);
+        set('chip',     st.chip);
+        set('cores',    st.cores);
+        set('cpu',      st.cpu_mhz+' MHz');
+        set('flash',    fmtBytes(st.flash_size));
+        set('heap',     fmtBytes(st.free_heap));
+        set('esp-mac',  st.esp_mac);
+        set('uptime',   fmtUptime(st.uptime_ms));
+        set('ssid',     st.ssid);
+        set('ip',       st.ip);
+        set('gw',       st.gateway);
+        set('rssi',     st.rssi+' dBm');
+        set('ch',       st.channel);
 
         const nb=document.getElementById('nodes-body');
         nb.innerHTML='';
@@ -124,8 +140,10 @@ static const char HTML[] PROGMEM = R"rawliteral(
           document.getElementById('nodes-empty').style.display='none';
           document.getElementById('nodes-table').style.display='';
           nd.nodes.forEach(n=>{
-            const dot='<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:'+(n.last_seen_seconds_ago<=120?'#3fb950':'#f85149')+';margin-right:6px"></span>';
-            nb.innerHTML+='<tr><td>'+dot+n.mac+'</td><td>'+n.last_seen_seconds_ago+'s ago</td></tr>';
+            const isMe=n.mac.toUpperCase()===st.esp_mac.toUpperCase();
+            const dot='<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:'+(isMe?'#58a6ff':n.last_seen_seconds_ago<=120?'#3fb950':'#f85149')+';margin-right:6px"></span>';
+            const label=isMe?n.mac+' <span style="font-size:0.75em;color:#58a6ff">[coordinator]</span>':n.mac;
+            nb.innerHTML+='<tr><td>'+dot+label+'</td><td>'+(isMe?'-':n.last_seen_seconds_ago+'s ago')+'</td></tr>';
           });
         }else{
           document.getElementById('nodes-empty').style.display='';
@@ -139,7 +157,7 @@ static const char HTML[] PROGMEM = R"rawliteral(
           document.getElementById('log-table').style.display='';
           lg.packets.slice().reverse().forEach(p=>{
             lb.innerHTML+='<tr>'
-              +'<td><span class="tag">0x'+p.type.toString(16).padStart(2,'0')+'</span></td>'
+              +'<td><span class="tag">'+({0x12:'PING',0x13:'PONG',0x15:'DATA'}[p.type]||'0x'+p.type.toString(16).padStart(2,'0'))+'</span></td>'
               +'<td>'+p.src+'</td>'
               +'<td>0x'+p.appId.toString(16).padStart(2,'0')+'</td>'
               +'<td>'+p.payload+'</td>'
@@ -168,14 +186,18 @@ void initWebDashboard(AsyncWebServer& server) {
 
   server.on("/api/status", HTTP_GET, [](AsyncWebServerRequest* request) {
     String json = "{";
-    json += "\"chip\":\""    + String(ESP.getChipModel())   + "\",";
-    json += "\"cpu_mhz\":"   + String(ESP.getCpuFreqMHz())  + ",";
-    json += "\"free_heap\":" + String(ESP.getFreeHeap())    + ",";
-    json += "\"uptime_ms\":" + String(millis())             + ",";
-    json += "\"ssid\":\""    + WiFi.SSID()                  + "\",";
-    json += "\"ip\":\""      + WiFi.localIP().toString()    + "\",";
-    json += "\"rssi\":"      + String(WiFi.RSSI())          + ",";
-    json += "\"channel\":"   + String(WiFi.channel());
+    json += "\"chip\":\""       + String(ESP.getChipModel())        + "\",";
+    json += "\"cores\":"        + String(ESP.getChipCores())        + ",";
+    json += "\"cpu_mhz\":"      + String(ESP.getCpuFreqMHz())       + ",";
+    json += "\"flash_size\":"   + String(ESP.getFlashChipSize())    + ",";
+    json += "\"free_heap\":"    + String(ESP.getFreeHeap())         + ",";
+    json += "\"esp_mac\":\""    + String(WiFi.macAddress())         + "\",";
+    json += "\"uptime_ms\":"    + String(millis())                  + ",";
+    json += "\"ssid\":\""       + WiFi.SSID()                       + "\",";
+    json += "\"ip\":\""         + WiFi.localIP().toString()         + "\",";
+    json += "\"gateway\":\""    + WiFi.gatewayIP().toString()       + "\",";
+    json += "\"rssi\":"         + String(WiFi.RSSI())               + ",";
+    json += "\"channel\":"      + String(WiFi.channel());
     json += "}";
     request->send(200, "application/json", json);
   });

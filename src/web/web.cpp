@@ -124,7 +124,9 @@ static const char HTML[] PROGMEM = R"rawliteral(
           document.getElementById('nodes-empty').style.display='none';
           document.getElementById('nodes-table').style.display='';
           nd.nodes.forEach(n=>{
-            nb.innerHTML+='<tr><td>'+n.mac+'</td><td>'+n.last_seen_seconds_ago+'s ago</td></tr>';
+            const dot='<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:'+(n.last_seen_seconds_ago<=120?'#3fb950':'#f85149')+';margin-right:6px"></span>';
+            const id='ping-'+n.mac.replace(/:/g,'');
+            nb.innerHTML+='<tr><td>'+dot+n.mac+'</td><td>'+n.last_seen_seconds_ago+'s ago</td><td><button class="ping-btn" id="'+id+'" onclick="ping(\''+n.mac+'\',\''+id+'\')">ping</button></td></tr>';
           });
         }else{
           document.getElementById('nodes-empty').style.display='';
@@ -162,7 +164,7 @@ static const char HTML[] PROGMEM = R"rawliteral(
 // --- Endpoints ---
 void initWebDashboard(AsyncWebServer& server) {
   server.on("/", HTTP_GET, [](AsyncWebServerRequest* request) {
-    request->send_P(200, "text/html", HTML);
+    request->send(200, "text/html", HTML);
   });
 
   server.on("/api/status", HTTP_GET, [](AsyncWebServerRequest* request) {

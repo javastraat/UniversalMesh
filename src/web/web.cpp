@@ -139,11 +139,11 @@ static const char HTML[] PROGMEM = R"rawliteral(
         if(nd.nodes&&nd.nodes.length){
           document.getElementById('nodes-empty').style.display='none';
           document.getElementById('nodes-table').style.display='';
-          nd.nodes.forEach(n=>{
-            const isMe=n.mac.toUpperCase()===st.esp_mac.toUpperCase();
-            const dot='<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:'+(isMe?'#58a6ff':n.last_seen_seconds_ago<=120?'#3fb950':'#f85149')+';margin-right:6px"></span>';
-            const label=isMe?n.mac+' <span style="font-size:0.75em;color:#58a6ff">[coordinator]</span>':n.mac;
-            nb.innerHTML+='<tr><td>'+dot+label+'</td><td>'+(isMe?'-':n.last_seen_seconds_ago+'s ago')+'</td></tr>';
+          const blueDot='<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#58a6ff;margin-right:6px"></span>';
+          nb.innerHTML='<tr><td>'+blueDot+st.esp_mac+' <span style="font-size:0.75em;color:#58a6ff">[coordinator]</span></td><td>-</td></tr>';
+          nd.nodes.filter(n=>n.mac.toUpperCase()!==st.esp_mac.toUpperCase()).forEach(n=>{
+            const dot='<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:'+(n.last_seen_seconds_ago<=120?'#3fb950':'#f85149')+';margin-right:6px"></span>';
+            nb.innerHTML+='<tr><td>'+dot+n.mac+'</td><td>'+n.last_seen_seconds_ago+'s ago</td></tr>';
           });
         }else{
           document.getElementById('nodes-empty').style.display='';

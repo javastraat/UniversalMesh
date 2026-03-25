@@ -3,9 +3,10 @@ import requests
 import datetime
 import random
 import time
+import argparse
 
 # --- CONFIGURATION ---
-COORDINATOR_IP = "192.168.2.164"
+COORDINATOR_IP = "192.168.2.124"
 DESTINATION_MAC = "FF:FF:FF:FF:FF:FF" # Broadcast to all nodes
 APP_ID_TEXT = 1  # Tells the Gateway to decode as ASCII
 
@@ -67,12 +68,15 @@ MESSAGES = [
     "Mesh Partition Healed",
 ]
 
-def send_mesh_update():
+def send_mesh_update(custom_text=None):
     url = f"http://{COORDINATOR_IP}/api/tx"
     
     # 1. Generate the data
     now = datetime.datetime.now().strftime("%H:%M:%S")
-    msg = random.choice(MESSAGES)
+    if custom_text:
+        msg = custom_text
+    else:
+        msg = random.choice(MESSAGES)
     full_string = f"[{now}] {msg}"
     
     # 2. Convert string to Hex for the Coordinator API
@@ -98,5 +102,23 @@ def send_mesh_update():
         print(f"Failed: Could not connect to Coordinator at {COORDINATOR_IP}")
 
 if __name__ == "__main__":
-    # Run once, or wrap in a loop for a "heartbeat" simulation
-    send_mesh_update()
+    parser = argparse.ArgumentParser(description="Send a mesh update message.")
+    parser.add_argument('-t', '--text', type=str, help='Custom text to send instead of a random message')
+    parser.add_argument('-l', '--loop', action='store_true', help='Enable loop mode to send messages repeatedly')
+    parser.add_argument('-n', '--num', type=int, default=0, help='Number of messages to send (0 = infinite in loop mode)')
+    parser.add_argument('-i', '--interval', type=float, default=2.0, help='Interval between messages in seconds (loop mode)')
+    args = parser.parse_args()
+
+    if args.loop:
+        count = 0
+        try:
+            while True:
+                send_mesh_update(args.text)
+                count += 1
+                if args.num > 0 and count >= args.num:
+                    break
+                time.sleep(args.interval)
+        except KeyboardInterrupt:
+            print("\nLoop stopped by user.")
+    else:
+        send_mesh_update(args.text)

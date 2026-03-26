@@ -2,6 +2,7 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <ArduinoJson.h>
+#include <freertos/semphr.h>
 
 #ifdef LILYGO_T_ETH_ELITE
 extern bool    isEthConnected();
@@ -49,6 +50,25 @@ void logPacket(uint8_t type, uint8_t* srcMac, uint8_t appId, const uint8_t* payl
   p.payload[len] = '\0';
   _logHead = (_logHead + 1) % LOG_SIZE;
   if (_logCount < LOG_SIZE) _logCount++;
+}
+
+// --- Serial console log buffer (internal RAM, NOT PSRAM) ---
+#define SERIAL_LOG_LINES    40
+#define SERIAL_LOG_LINE_LEN 120
+static char _serialLog[SERIAL_LOG_LINES][SERIAL_LOG_LINE_LEN];
+static int  _serialLogHead  = 0;
+static int  _serialLogCount = 0;
+
+// --- Mutex protecting meshNodes[] and _log[] across tasks/cores ---
+static SemaphoreHandle_t _dataMutex = nullptr;
+void lockMeshData()   { if (_dataMutex) xSemaphoreTake(_dataMutex, portMAX_DELAY); }
+void unlockMeshData() { if (_dataMutex) xSemaphoreGive(_dataMutex); }
+
+void addSerialLog(const char* msg) {
+  strncpy(_serialLog[_serialLogHead], msg, SERIAL_LOG_LINE_LEN - 1);
+  _serialLog[_serialLogHead][SERIAL_LOG_LINE_LEN - 1] = '\0';
+  _serialLogHead = (_serialLogHead + 1) % SERIAL_LOG_LINES;
+  if (_serialLogCount < SERIAL_LOG_LINES) _serialLogCount++;
 }
 
 // --- Dashboard HTML (stored in flash) ---
@@ -104,6 +124,7 @@ static const char HTML[] PROGMEM = R"rawliteral(
     @media screen and (max-width:600px){
       .grid{grid-template-columns:1fr}
     }
+    .console-out{font-family:monospace;background:#0d1117;color:#3fb950;height:220px;overflow-y:auto;white-space:pre-wrap;border-radius:4px;padding:10px;border:1px solid #30363d}
   </style>
   <script>
     (function(){
@@ -114,7 +135,7 @@ static const char HTML[] PROGMEM = R"rawliteral(
 </head>
 <body>
   <div class="container">
-  <h1><span class="dot"></span>UniversalMesh Coordinator<button class="theme-btn" onclick="toggleTheme()" id="theme-btn" title="Toggle dark/light mode">🌙</button></h1>
+  <h1><span class="dot"></span>UniversalMesh Coordinator<button class="theme-btn" onclick="toggleTheme()" id="theme-btn" title="Toggle dark/light mode">🌙</button><button class="theme-btn" onclick="rebootDevice()" id="reboot-btn" title="Reboot coordinator" style="margin-left:6px;color:#f85149">↺</button><button class="theme-btn" onclick="toggleConsole()" id="console-btn" title="Toggle serial console" style="margin-left:6px;font-size:0.8em">&gt;_</button></h1>
   <div class="grid">
     <div class="card">
       <h2>ESP</h2>
@@ -182,8 +203,21 @@ static const char HTML[] PROGMEM = R"rawliteral(
       <div class="sub" id="tick"></div>
     </div>
   </div>
+  <div id="console-panel" style="display:none;margin-top:15px">
+    <div class="card">
+      <h2>&gt;_ Serial Console</h2>
+      <div id="console-out" class="console-out"></div>
+    </div>
+  </div>
   </div>
   <script>
+    async function rebootDevice(){
+      const btn=document.getElementById('reboot-btn');
+      if(!confirm('Reboot the coordinator?')) return;
+      btn.textContent='…';btn.disabled=true;
+      try{ await fetch('/api/reboot',{method:'POST'}); }catch(e){}
+      btn.textContent='↺';btn.disabled=false;
+    }
     function toggleTheme(){
       const isDark=document.documentElement.getAttribute('data-theme')==='dark';
       const next=isDark?'light':'dark';
@@ -312,6 +346,22 @@ static const char HTML[] PROGMEM = R"rawliteral(
       }catch(e){btn.textContent='error';}
       if(!reboot) setTimeout(()=>{btn.textContent='save';btn.disabled=false;},2000);
     }
+    let _consoleOpen=false,_consoleInterval=null;
+    async function refreshConsole(){
+      try{
+        const d=await fetch('/api/serial').then(r=>r.json());
+        const el=document.getElementById('console-out');
+        el.textContent=(d.lines||[]).join('\n');
+        el.scrollTop=el.scrollHeight;
+      }catch(e){}
+    }
+    function toggleConsole(){
+      _consoleOpen=!_consoleOpen;
+      document.getElementById('console-panel').style.display=_consoleOpen?'':'none';
+      document.getElementById('console-btn').style.opacity=_consoleOpen?'1':'0.5';
+      if(_consoleOpen){refreshConsole();_consoleInterval=setInterval(refreshConsole,2000);}
+      else{clearInterval(_consoleInterval);_consoleInterval=null;}
+    }
     refresh();
     setInterval(refresh,3000);
   </script>
@@ -321,6 +371,8 @@ static const char HTML[] PROGMEM = R"rawliteral(
 
 // --- Endpoints ---
 void initWebDashboard(AsyncWebServer& server) {
+  _dataMutex = xSemaphoreCreateMutex();
+
   server.on("/", HTTP_GET, [](AsyncWebServerRequest* request) {
     request->send(200, "text/html", HTML);
   });
@@ -373,19 +425,61 @@ void initWebDashboard(AsyncWebServer& server) {
   );
 #endif
 
+  server.on("/api/reboot", HTTP_POST, [](AsyncWebServerRequest* request) {
+    request->send(200, "application/json", "{\"rebooting\":true}");
+    delay(200);
+    ESP.restart();
+  });
+
   server.on("/api/log", HTTP_GET, [](AsyncWebServerRequest* request) {
+    // Snapshot indices under lock only — keep lock time in microseconds, not milliseconds
+    lockMeshData();
+    int head  = _logHead;
+    int count = _logCount;
+    unlockMeshData();
+
     String json = "{\"packets\":[";
-    int start = _logCount < LOG_SIZE ? 0 : _logHead;
-    for (int i = 0; i < _logCount; i++) {
-      PacketLog& p = _log[(start + i) % LOG_SIZE];
+    int start = count < LOG_SIZE ? 0 : head;
+    for (int i = 0; i < count; i++) {
+      const PacketLog& p = _log[(start + i) % LOG_SIZE];
       if (i > 0) json += ",";
       json += "{";
-      json += "\"type\":"    + String(p.type)              + ",";
-      json += "\"src\":\""   + String(p.src)               + "\",";
-      json += "\"appId\":"   + String(p.appId)             + ",";
-      json += "\"payload\":\"" + String(p.payload)         + "\",";
-      json += "\"age_s\":"   + String((millis() - p.ts) / 1000);
+      json += "\"type\":"  + String(p.type)  + ",";
+      json += "\"src\":\""  + String(p.src)  + "\",";
+      json += "\"appId\":" + String(p.appId) + ",";
+      // Escape payload — raw bytes (e.g. 0x01) must not appear unescaped in JSON
+      json += "\"payload\":\"";
+      for (const char* c = p.payload; *c; c++) {
+        uint8_t b = (uint8_t)*c;
+        if      (b == '"')  json += "\\\"";
+        else if (b == '\\') json += "\\\\";
+        else if (b < 0x20)  { char esc[7]; snprintf(esc, sizeof(esc), "\\u%04x", b); json += esc; }
+        else                json += *c;
+      }
+      json += "\",";
+      json += "\"age_s\":" + String((millis() - p.ts) / 1000);
       json += "}";
+    }
+    json += "]}";
+    request->send(200, "application/json", json);
+  });
+
+  server.on("/api/serial", HTTP_GET, [](AsyncWebServerRequest* request) {
+    String json = "{\"lines\":[";
+    int start = _serialLogCount < SERIAL_LOG_LINES ? 0 : _serialLogHead;
+    int count = _serialLogCount;
+    for (int i = 0; i < count; i++) {
+      const char* line = _serialLog[(start + i) % SERIAL_LOG_LINES];
+      if (i > 0) json += ",";
+      json += "\"";
+      for (const char* c = line; *c; c++) {
+        uint8_t b = (uint8_t)*c;
+        if      (b == '"')  json += "\\\"";
+        else if (b == '\\') json += "\\\\";
+        else if (b < 0x20)  { char esc[7]; snprintf(esc, sizeof(esc), "\\u%04x", b); json += esc; }
+        else                json += *c;
+      }
+      json += "\"";
     }
     json += "]}";
     request->send(200, "application/json", json);

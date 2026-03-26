@@ -154,7 +154,11 @@ void updateNodeTable(uint8_t* mac) {
       memcpy(meshNodes[i].mac, mac, 6);
       meshNodes[i].lastSeen = millis();
       meshNodes[i].active = true;
-      Serial.println("[ROUTING] New Node Discovered and Added to Table!");
+      char discMsg[80];
+      snprintf(discMsg, sizeof(discMsg), "[ROUTING] New node: %02X:%02X:%02X:%02X:%02X:%02X",
+               mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+      Serial.println(discMsg);
+      addSerialLog(discMsg);
       return;
     }
   }
@@ -171,38 +175,33 @@ void onMeshMessage(MeshPacket* packet, uint8_t* senderMac) {
   ledFlash(LED_RX_BLINK);
 #endif
 
-  // 1. Immediately log the node in the routing table
+  // 1. Immediately log the node in the routing table (mutex protects meshNodes[] and _log[])
+  lockMeshData();
   updateNodeTable(packet->srcMac);
   logPacket(packet->type, senderMac, packet->appId, packet->payload, packet->payloadLen);
+  unlockMeshData();
 
   // 2. Process the packet types
   if (packet->type == MESH_TYPE_PONG) {
-    Serial.printf("[DISCOVERY] PONG received from node!\n");
-  } 
-  else if (packet->type == MESH_TYPE_DATA) {
-  JsonDocument doc;
-  
-  doc["type"] = packet->type;
-  doc["msgId"] = packet->msgId;
-  doc["ttl"] = packet->ttl;
-  doc["appId"] = packet->appId;
-  
-  char macStr[18];
-  sprintf(macStr, "%02X:%02X:%02X:%02X:%02X:%02X", 
-          senderMac[0], senderMac[1], senderMac[2], 
-          senderMac[3], senderMac[4], senderMac[5]);
-  doc["src"] = macStr;
-  
-  if (packet->payloadLen > 0) {
-    char payloadStr[65] = {0};
-    memcpy(payloadStr, packet->payload, packet->payloadLen);
-    doc["payload"] = payloadStr;
+    char logMsg[80];
+    snprintf(logMsg, sizeof(logMsg), "[DISCOVERY] PONG from %02X:%02X:%02X:%02X:%02X:%02X",
+             senderMac[0], senderMac[1], senderMac[2],
+             senderMac[3], senderMac[4], senderMac[5]);
+    Serial.println(logMsg);
+    addSerialLog(logMsg);
   }
-
-  // Print as a clean JSON string to the Serial Monitor (for the Node.js server to read)
-  serializeJson(doc, Serial);
-  Serial.println();
-}
+  else if (packet->type == MESH_TYPE_DATA) {
+    char payloadStr[65] = {0};
+    uint8_t len = packet->payloadLen < 64 ? packet->payloadLen : 64;
+    memcpy(payloadStr, packet->payload, len);
+    char logMsg[128];
+    snprintf(logMsg, sizeof(logMsg), "[DATA] src=%02X:%02X:%02X:%02X:%02X:%02X appId=0x%02X payload=%s",
+             senderMac[0], senderMac[1], senderMac[2],
+             senderMac[3], senderMac[4], senderMac[5],
+             packet->appId, payloadStr);
+    Serial.println(logMsg);
+    addSerialLog(logMsg);
+  }
 }
 
 void setup() {
@@ -315,8 +314,12 @@ void setup() {
   if (mesh.begin(chan)) {
     Serial.println("[SYSTEM] Universal Mesh Online.");
     mesh.onReceive(onMeshMessage);
+    char meshMsg[64];
+    snprintf(meshMsg, sizeof(meshMsg), "[MESH] Online on channel %d", chan);
+    addSerialLog(meshMsg);
   } else {
     Serial.println("[ERROR] Mesh Initialization Failed!");
+    addSerialLog("[ERROR] Mesh init failed!");
   }
 
   // 3. Setup REST API Endpoint for Injecting Packets
@@ -365,20 +368,24 @@ void setup() {
   });
 
   server.on("/api/nodes", HTTP_GET, [](AsyncWebServerRequest *request) {
+    // Snapshot under lock to prevent PSRAM cache coherency race with onMeshMessage
+    KnownNode snap[MAX_NODES];
+    lockMeshData();
+    memcpy(snap, meshNodes, sizeof(snap));
+    unlockMeshData();
+
     JsonDocument doc;
     JsonArray nodesArray = doc["nodes"].to<JsonArray>();
-
+    unsigned long now = millis();
     for (int i = 0; i < MAX_NODES; i++) {
-      if (meshNodes[i].active) {
+      if (snap[i].active) {
         JsonObject nodeObj = nodesArray.add<JsonObject>();
-
         char macStr[18];
-        sprintf(macStr, "%02X:%02X:%02X:%02X:%02X:%02X",
-                meshNodes[i].mac[0], meshNodes[i].mac[1], meshNodes[i].mac[2],
-                meshNodes[i].mac[3], meshNodes[i].mac[4], meshNodes[i].mac[5]);
-
+        snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X",
+                 snap[i].mac[0], snap[i].mac[1], snap[i].mac[2],
+                 snap[i].mac[3], snap[i].mac[4], snap[i].mac[5]);
         nodeObj["mac"] = macStr;
-        nodeObj["last_seen_seconds_ago"] = (millis() - meshNodes[i].lastSeen) / 1000;
+        nodeObj["last_seen_seconds_ago"] = (now - snap[i].lastSeen) / 1000;
       }
     }
 
@@ -390,6 +397,7 @@ void setup() {
   initWebDashboard(server);
   server.begin();
   Serial.println("[SYSTEM] REST API Gateway Ready.");
+  addSerialLog("[SYSTEM] REST API ready - waiting for nodes...");
 }
 
 void loop() {

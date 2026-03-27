@@ -1,13 +1,57 @@
 #include <Arduino.h>
 #include <WiFi.h>
-#include <WebServer.h>
+#include <ESPAsyncWebServer.h>
 #include <esp_wifi.h>
 #include <ArduinoJson.h>
+#ifdef HAS_RGB_LED
 #include <Adafruit_NeoPixel.h>
+#endif
 #include "secrets.h"
 #include "UniversalMesh.h"
+#include "web/web.h"
+
+#ifdef LILYGO_T_ETH_ELITE
+#include <ETH.h>
+#include <Preferences.h>
+#include <esp_now.h>
+extern void setupETH();
+extern void loopETH();
+extern bool isEthConnected();
+extern bool isEthLinkUp();
+
+static Preferences _prefs;
+static uint8_t _meshChannel = 1;  // default
+
+static uint8_t loadMeshChannel() {
+  _prefs.begin("mesh", true);
+  uint8_t ch = _prefs.getUChar("channel", 1);
+  _prefs.end();
+  return (ch >= 1 && ch <= 13) ? ch : 1;
+}
+
+uint8_t getMeshChannel() { return _meshChannel; }
+
+void setMeshChannel(uint8_t ch) {
+  if (ch < 1 || ch > 13) return;
+  _meshChannel = ch;
+  // Persist
+  _prefs.begin("mesh", false);
+  _prefs.putUChar("channel", ch);
+  _prefs.end();
+  // Apply to radio
+  esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
+  // Update ESP-NOW broadcast peer
+  static const uint8_t broadcast[6] = {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
+  esp_now_peer_info_t peer = {};
+  memcpy(peer.peer_addr, broadcast, 6);
+  peer.channel = ch;
+  esp_now_mod_peer(&peer);
+  Serial.printf("[MESH] Channel changed to %d\n", ch);
+}
+#endif
 
 // --- RGB LED ---
+#ifdef HAS_RGB_LED
 constexpr uint8_t LED_PIN  = 8;
 Adafruit_NeoPixel rgbLed(1, LED_PIN, NEO_GRB + NEO_KHZ800);
 
@@ -82,6 +126,7 @@ void ledUpdate() {
     }
   }
 }
+#endif // HAS_RGB_LED
 
 
 
@@ -109,52 +154,54 @@ void updateNodeTable(uint8_t* mac) {
       memcpy(meshNodes[i].mac, mac, 6);
       meshNodes[i].lastSeen = millis();
       meshNodes[i].active = true;
-      Serial.println("[ROUTING] New Node Discovered and Added to Table!");
+      char discMsg[80];
+      snprintf(discMsg, sizeof(discMsg), "[ROUTING] New node: %02X:%02X:%02X:%02X:%02X:%02X",
+               mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+      Serial.println(discMsg);
+      addSerialLog(discMsg);
       return;
     }
   }
 }
 
 
-WebServer server(80);
+AsyncWebServer server(80);
 UniversalMesh mesh;
 
 // --- RECEIVE CALLBACK ---
 // Triggers when the mesh library catches a packet meant for us (or broadcast)
 void onMeshMessage(MeshPacket* packet, uint8_t* senderMac) {
+#ifdef HAS_RGB_LED
   ledFlash(LED_RX_BLINK);
+#endif
 
-  // 1. Immediately log the node in the routing table
+  // 1. Immediately log the node in the routing table (mutex protects meshNodes[] and _log[])
+  lockMeshData();
   updateNodeTable(packet->srcMac);
+  logPacket(packet->type, senderMac, packet->appId, packet->payload, packet->payloadLen);
+  unlockMeshData();
 
   // 2. Process the packet types
   if (packet->type == MESH_TYPE_PONG) {
-    Serial.printf("[DISCOVERY] PONG received from node!\n");
-  } 
-  else if (packet->type == MESH_TYPE_DATA) {
-  JsonDocument doc;
-  
-  doc["type"] = packet->type;
-  doc["msgId"] = packet->msgId;
-  doc["ttl"] = packet->ttl;
-  doc["appId"] = packet->appId;
-  
-  char macStr[18];
-  sprintf(macStr, "%02X:%02X:%02X:%02X:%02X:%02X", 
-          senderMac[0], senderMac[1], senderMac[2], 
-          senderMac[3], senderMac[4], senderMac[5]);
-  doc["src"] = macStr;
-  
-  if (packet->payloadLen > 0) {
-    char payloadStr[65] = {0};
-    memcpy(payloadStr, packet->payload, packet->payloadLen);
-    doc["payload"] = payloadStr;
+    char logMsg[80];
+    snprintf(logMsg, sizeof(logMsg), "[DISCOVERY] PONG from %02X:%02X:%02X:%02X:%02X:%02X",
+             senderMac[0], senderMac[1], senderMac[2],
+             senderMac[3], senderMac[4], senderMac[5]);
+    Serial.println(logMsg);
+    addSerialLog(logMsg);
   }
-
-  // Print as a clean JSON string to the Serial Monitor (for the Node.js server to read)
-  serializeJson(doc, Serial);
-  Serial.println();
-}
+  else if (packet->type == MESH_TYPE_DATA) {
+    char payloadStr[65] = {0};
+    uint8_t len = packet->payloadLen < 64 ? packet->payloadLen : 64;
+    memcpy(payloadStr, packet->payload, len);
+    char logMsg[128];
+    snprintf(logMsg, sizeof(logMsg), "[DATA] src=%02X:%02X:%02X:%02X:%02X:%02X appId=0x%02X payload=%s",
+             senderMac[0], senderMac[1], senderMac[2],
+             senderMac[3], senderMac[4], senderMac[5],
+             packet->appId, payloadStr);
+    Serial.println(logMsg);
+    addSerialLog(logMsg);
+  }
 }
 
 void setup() {
@@ -164,125 +211,199 @@ void setup() {
   uint32_t t = millis();
   while (!Serial && (millis() - t) < 5000) { delay(10); }
   
+#ifdef HAS_RGB_LED
   rgbLed.begin();
   rgbLed.show();
   ledTimer = millis();
+#endif
 
   Serial.println("\n=== MESH MASTER BRIDGE INITIALIZING ===");
 
-  // 1. Connect to Home Wi-Fi
   WiFi.mode(WIFI_STA);
+
+#ifdef LILYGO_T_ETH_ELITE
+  // --- ETH Elite: Ethernet first, WiFi fallback ---
+  setupETH();
+
+  // Phase 1: wait up to 5s for a cable (link up)
+  Serial.print("[ETH] Waiting for cable");
+  unsigned long ethStart = millis();
+  while (!isEthLinkUp() && (millis() - ethStart) < 5000) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println();
+
+  // Phase 2: cable detected — wait up to 60s for DHCP
+  if (isEthLinkUp()) {
+    Serial.print("[ETH] Cable detected, waiting for IP");
+    ethStart = millis();
+    while (!isEthConnected() && (millis() - ethStart) < 60000) {
+      delay(500);
+      Serial.print(".");
+    }
+    Serial.println();
+  }
+
+  uint8_t chan;
+  if (isEthConnected()) {
+    Serial.printf("[ETH] Online! IP: %s\n", ETH.localIP().toString().c_str());
+    esp_wifi_set_ps(WIFI_PS_NONE);
+    _meshChannel = loadMeshChannel();
+    chan = _meshChannel;
+    Serial.printf("[MESH] Using channel %d (from NVS)\n", chan);
+    esp_wifi_set_channel(chan, WIFI_SECOND_CHAN_NONE);
+  } else {
+    Serial.println("[ETH] No link — falling back to WiFi...");
+    WiFi.begin(WIFI_SSID, WIFI_PASS);
+
+    constexpr unsigned long WIFI_TIMEOUT_MS = 15000;
+    unsigned long wifiStart = millis();
+    while (WiFi.status() != WL_CONNECTED && (millis() - wifiStart) < WIFI_TIMEOUT_MS) {
+      delay(300);
+      Serial.print(".");
+    }
+    Serial.println();
+
+    if (WiFi.status() == WL_CONNECTED) {
+      esp_wifi_set_ps(WIFI_PS_NONE);
+      Serial.printf("[WIFI] Connected! IP: %s\n", WiFi.localIP().toString().c_str());
+    } else {
+      Serial.println("[WIFI] Connection failed! Running offline.");
+    }
+    chan = (WiFi.status() == WL_CONNECTED) ? WiFi.channel() : 6;
+  }
+
+#else
+  // --- Standard build: WiFi only ---
   WiFi.begin(WIFI_SSID, WIFI_PASS);
   Serial.printf("[WIFI] Connecting to %s\n", WIFI_SSID);
 
   constexpr unsigned long WIFI_TIMEOUT_MS = 15000;
   unsigned long wifiStart = millis();
   while (WiFi.status() != WL_CONNECTED && (millis() - wifiStart) < WIFI_TIMEOUT_MS) {
-    // Blink green (blocking phase — inline is fine)
+#ifdef HAS_RGB_LED
     setColor(COLOR_GREEN); delay(300);
     setColor(COLOR_OFF);   delay(300);
+#else
+    delay(300);
+#endif
     Serial.print(".");
   }
 
   if (WiFi.status() == WL_CONNECTED) {
     esp_wifi_set_ps(WIFI_PS_NONE);
+#ifdef HAS_RGB_LED
     ledState = LED_CONNECTED;
     setColor(COLOR_GREEN);
-    uint8_t chan = WiFi.channel();
-    Serial.printf("\n[WIFI] Connected! API IP: %s\n", WiFi.localIP().toString().c_str());
-    Serial.printf("[WIFI] Operating Channel: %d\n", chan);
+#endif
+    Serial.printf("\n[WIFI] Connected! IP: %s\n", WiFi.localIP().toString().c_str());
+    Serial.printf("[WIFI] Channel: %d\n", WiFi.channel());
   } else {
+#ifdef HAS_RGB_LED
     ledState = LED_NO_WIFI;
     setColor(COLOR_RED);
+#endif
     Serial.println("\n[WIFI] Connection failed! Running offline.");
   }
 
   uint8_t chan = (WiFi.status() == WL_CONNECTED) ? WiFi.channel() : 6;
+#endif  // LILYGO_T_ETH_ELITE
 
   // 2. Initialize Universal Mesh on the Router's Channel
   if (mesh.begin(chan)) {
     Serial.println("[SYSTEM] Universal Mesh Online.");
     mesh.onReceive(onMeshMessage);
+    char meshMsg[64];
+    snprintf(meshMsg, sizeof(meshMsg), "[MESH] Online on channel %d", chan);
+    addSerialLog(meshMsg);
   } else {
     Serial.println("[ERROR] Mesh Initialization Failed!");
+    addSerialLog("[ERROR] Mesh init failed!");
   }
 
   // 3. Setup REST API Endpoint for Injecting Packets
-server.on("/api/tx", HTTP_POST, []() {
-    if (server.hasArg("plain")) {
+  server.on("/api/tx", HTTP_POST,
+    [](AsyncWebServerRequest *request) {},
+    nullptr,
+    [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
       JsonDocument doc;
-      deserializeJson(doc, server.arg("plain"));
-      
+      deserializeJson(doc, data, len);
+
       uint8_t destMac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
       const char* macStr = doc["dest"];
       if (macStr) {
         int temp[6];
         if (sscanf(macStr, "%x:%x:%x:%x:%x:%x", &temp[0], &temp[1], &temp[2], &temp[3], &temp[4], &temp[5]) == 6) {
-          for(int i=0; i<6; i++) destMac[i] = (uint8_t)temp[i];
+          for (int i = 0; i < 6; i++) destMac[i] = (uint8_t)temp[i];
         }
       }
 
       uint8_t ttl = doc["ttl"] | 4;
       uint8_t appId = doc["appId"] | 0x00;
       String payloadHex = doc["payload"] | "";
-      
+
       uint8_t payloadBytes[64] = {0};
       uint8_t payloadLen = payloadHex.length() / 2;
-      if (payloadLen > 64) payloadLen = 64; 
-      
+      if (payloadLen > 64) payloadLen = 64;
+
       for (int i = 0; i < payloadLen; i++) {
         String byteString = payloadHex.substring(i * 2, i * 2 + 2);
         payloadBytes[i] = (uint8_t) strtol(byteString.c_str(), NULL, 16);
       }
-      
-      // Hardcoded to MESH_TYPE_DATA (0x15)
+
       mesh.send(destMac, MESH_TYPE_DATA, appId, payloadBytes, payloadLen, ttl);
+#ifdef HAS_RGB_LED
       ledFlash(LED_TX_BLINK);
-      server.send(200, "application/json", "{\"status\":\"data_sent\"}");
+#endif
+      request->send(200, "application/json", "{\"status\":\"data_sent\"}");
     }
-  });
+  );
 
   // 2. Discovery Endpoint
-  server.on("/api/discover", HTTP_GET, []() {
+  server.on("/api/discover", HTTP_GET, [](AsyncWebServerRequest *request) {
     uint8_t broadcastMac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-    
-    // Broadcast a PING (0x12) to the whole network
     mesh.send(broadcastMac, MESH_TYPE_PING, 0x00, nullptr, 0, 4);
-    
-    // Return immediately. The PONGs will stream out via Serial as they arrive.
-    server.send(200, "application/json", "{\"status\":\"discovery_initiated\"}");
+    request->send(200, "application/json", "{\"status\":\"discovery_initiated\"}");
   });
 
-  server.on("/api/nodes", HTTP_GET, []() {
+  server.on("/api/nodes", HTTP_GET, [](AsyncWebServerRequest *request) {
+    // Snapshot under lock to prevent PSRAM cache coherency race with onMeshMessage
+    KnownNode snap[MAX_NODES];
+    lockMeshData();
+    memcpy(snap, meshNodes, sizeof(snap));
+    unlockMeshData();
+
     JsonDocument doc;
     JsonArray nodesArray = doc["nodes"].to<JsonArray>();
-
+    unsigned long now = millis();
     for (int i = 0; i < MAX_NODES; i++) {
-      if (meshNodes[i].active) {
+      if (snap[i].active) {
         JsonObject nodeObj = nodesArray.add<JsonObject>();
-        
         char macStr[18];
-        sprintf(macStr, "%02X:%02X:%02X:%02X:%02X:%02X", 
-                meshNodes[i].mac[0], meshNodes[i].mac[1], meshNodes[i].mac[2],
-                meshNodes[i].mac[3], meshNodes[i].mac[4], meshNodes[i].mac[5]);
-        
+        snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X",
+                 snap[i].mac[0], snap[i].mac[1], snap[i].mac[2],
+                 snap[i].mac[3], snap[i].mac[4], snap[i].mac[5]);
         nodeObj["mac"] = macStr;
-        // Calculate seconds since we last heard from it
-        nodeObj["last_seen_seconds_ago"] = (millis() - meshNodes[i].lastSeen) / 1000; 
+        nodeObj["last_seen_seconds_ago"] = (now - snap[i].lastSeen) / 1000;
       }
     }
-    
+
     String response;
     serializeJson(doc, response);
-    server.send(200, "application/json", response);
+    request->send(200, "application/json", response);
   });
 
+  initWebDashboard(server);
   server.begin();
   Serial.println("[SYSTEM] REST API Gateway Ready.");
+  addSerialLog("[SYSTEM] REST API ready - waiting for nodes...");
 }
 
 void loop() {
-  server.handleClient();
+#ifdef LILYGO_T_ETH_ELITE
+  loopETH();
+#endif
   mesh.update();
 
   // Temporary USB Serial Bypass for testing
@@ -294,9 +415,13 @@ void loop() {
       uint8_t destMac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
       const char* payload = "Serial Test Pkt";
       mesh.send(destMac, MESH_TYPE_DATA, 0x01, (const uint8_t*)payload, strlen(payload), 4);
+#ifdef HAS_RGB_LED
       ledFlash(LED_TX_BLINK);
+#endif
     }
   }
 
+#ifdef HAS_RGB_LED
   ledUpdate();
+#endif
 }

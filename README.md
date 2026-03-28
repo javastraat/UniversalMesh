@@ -25,7 +25,7 @@ The protocol relies on a highly efficient packed struct for routing and payload 
 
 | Field | Size (bytes) | Description |
 | :--- | :--- | :--- |
-| `type` | 1 | Message Type: `0x12` (PING), `0x13` (PONG), `0x15` (DATA). |
+| `type` | 1 | Message Type |
 | `ttl` | 1 | Time-To-Live (hop limit), decremented at each relay. |
 | `msgId` | 4 | Unique Message ID for de-duplication. |
 | `destMac` | 6 | Destination node's MAC address (or broadcast `FF:FF:FF:FF:FF:FF`). |
@@ -35,6 +35,16 @@ The protocol relies on a highly efficient packed struct for routing and payload 
 | `payload` | 64 | Raw data buffer for the application. |
 
 ---
+## Message Types
+| name | opcode | description |
+| :--- | :--- | :--- |
+| MESH_TYPE_PING |0x12 | Ping and discovery sweep |
+| MESH_TYPE_PONG | 0x13 | reply to PING |
+| MESH_TYPE_ACK  | 0x14 | Acknowledgement |
+| MESH_TYPE_DATA | 0x15 | Data packet |
+| MESH_TYPE_KEY_REQ | 0x16 | Node asks for key, Coordinator replies with key |
+| MESH_TYPE_SECURE_DATA | 0x17 | Secure Data packet, Coordinator decrypts and forwards |
+| MESH_TYPE_PARANOID_DATA | 0x18 | Secure Data packet, Coordinator acts as a dumb pipe (End-to-End Encrypted E2EE) |
 
 ## 📡 The Coordinator: ESP-NOW ↔ MQTT
 The production Coordinator utilizes the `UniversalMeshCoordinator` extension. It listens for incoming `DATA` packets from the mesh and automatically bridges them to MQTT.

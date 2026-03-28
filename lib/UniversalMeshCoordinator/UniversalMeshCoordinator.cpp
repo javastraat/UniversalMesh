@@ -81,9 +81,11 @@ void UniversalMeshCoordinator::handleMeshMessage(MeshPacket* packet, uint8_t* se
     // ---------------------------------------------------------
     if (packet->type == MESH_TYPE_DATA) {
         String topic = "mesh/telemetry/" + String(macStr) + "/" + String(packet->appId);
-        String hexPayload = bytesToHex(packet->payload, packet->payloadLen); // Helper func
+           // Convert the raw payload bytes directly into a String
+        String textPayload((char*)packet->payload, packet->payloadLen);
         
-        if (_mqtt.connected()) _mqtt.publish(topic.c_str(), hexPayload.c_str());
+        if (_mqtt.connected()) _mqtt.publish(topic.c_str(), textPayload.c_str());
+
     } 
     
     // ---------------------------------------------------------

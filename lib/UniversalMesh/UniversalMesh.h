@@ -11,6 +11,15 @@
   #include <esp_now.h>
   #include <esp_wifi.h>
 #endif
+#ifdef UM_DEBUG_MODE
+  #define UM_DEBUG_PRINT(...) Serial.print(__VA_ARGS__)
+  #define UM_DEBUG_PRINTLN(...) Serial.println(__VA_ARGS__)
+  #define UM_DEBUG_PRINTF(...) Serial.printf(__VA_ARGS__)
+#else
+  #define UM_DEBUG_PRINT(...)
+  #define UM_DEBUG_PRINTLN(...)
+  #define UM_DEBUG_PRINTF(...)
+#endif
 
 // --- PACKET TYPES ---
 #define MESH_TYPE_PING          0x12
@@ -76,9 +85,12 @@ class UniversalMesh {
 
     // State Management for Auto-Discovery
     MeshRole _role;
-    uint8_t _coordinatorMac[6];
+    static uint8_t _coordinatorMac[6];
+    volatile bool _pongReceived;
     bool _coordinatorFound;
     unsigned long _lastDiscoveryPing;
+
+    static void espNowOnReceive(const esp_now_recv_info_t* info, const uint8_t* data, int len);
 
     // Type-Aware Deduplication Engine
     struct SeenMessage { uint32_t msgId; uint8_t type; };

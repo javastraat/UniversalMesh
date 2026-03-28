@@ -1,6 +1,9 @@
 #include "UniversalMesh.h"
+#include <esp_wifi.h>
+
 
 UniversalMesh* UniversalMesh::_instance = nullptr;
+uint8_t UniversalMesh::_coordinatorMac[6];
 
 UniversalMesh::UniversalMesh() {
   _instance = this;
@@ -81,33 +84,55 @@ bool UniversalMesh::sendToCoordinator(uint8_t appId, uint8_t* payload, uint8_t l
   return send(_coordinatorMac, MESH_TYPE_DATA, appId, payload, len, 4);
 }
 
-// --- CHANNEL SWEEPER & DISCOVERY ---
 uint8_t UniversalMesh::findCoordinatorChannel(const char* nodeName) {
-  _coordinatorFound = false;
-  uint8_t nameLen = (nodeName != nullptr) ? strlen(nodeName) : 0;
-  if (nameLen > 64) nameLen = 64;
+    uint8_t broadcastMac[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+    
+    // Define the actual PING packet
+    uint8_t pingData[] = {0x50, 0x49, 0x4E, 0x47}; 
+    size_t pingLen = sizeof(pingData);
 
-  for (uint8_t ch = 1; ch <= 13; ch++) {
-    // Force Radio to new channel
-    #if defined(ESP32)
-      esp_wifi_set_promiscuous(true);
-      esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
-      esp_wifi_set_promiscuous(false);
-    #elif defined(ESP8266)
-      wifi_set_channel(ch);
-    #endif
+    for (uint8_t ch = 1; ch <= 13; ch++) {
+        #if defined(ESP8266)
+          wifi_set_channel(ch);
+          if (esp_now_is_peer_exist(broadcastMac)) {
+            esp_now_del_peer(broadcastMac);
+          }
+          esp_now_add_peer(broadcastMac, ESP_NOW_ROLE_COMBO, ch, NULL, 0);
+        #elif defined(ESP32)
+          esp_wifi_set_promiscuous(true);
+          esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
+          esp_wifi_set_promiscuous(false);
+          
+          esp_now_peer_info_t peerInfo = {};
+          memcpy(peerInfo.peer_addr, broadcastMac, 6);
+          peerInfo.channel = ch;
+          peerInfo.encrypt = false;
+          if (esp_now_is_peer_exist(broadcastMac)) {
+              esp_now_mod_peer(&peerInfo);
+          } else {
+              esp_now_add_peer(&peerInfo);
+          }
+        #endif
+        delay(10); 
+        
+        UM_DEBUG_PRINTF("[MESH] Pinging Channel %d...\n", ch);
 
-    // Fire PING, tucking the name into the payload
-    send(_broadcastMac, MESH_TYPE_PING, 0x00, (const uint8_t*)nodeName, nameLen, 4);
+        _pongReceived = false; 
+        
+        // Send the PING
+        esp_now_send(broadcastMac, pingData, pingLen);
 
-    // Wait up to 150ms for the Coordinator to reply
-    unsigned long startWait = millis();
-    while (millis() - startWait < 150) {
-      delay(10); // Yield
-      if (_coordinatorFound) return ch; // Success!
+        // Listening Window
+        unsigned long startWait = millis();
+        while (millis() - startWait < 150) {
+            if (_pongReceived) {
+                UM_DEBUG_PRINTF("[MESH] PONG received on Channel %d!\n", ch);
+                return ch; 
+            }
+            delay(5); // Let the CPU handle the incoming packet interrupt
+        }
     }
-  }
-  return 0; // Failed to find Coordinator
+    return 0;
 }
 
 // --- RTC MEMORY HELPERS ---
@@ -149,6 +174,20 @@ void UniversalMesh::espNowRecvWrapper(const esp_now_recv_info_t *info, const uin
 #endif
 
 void UniversalMesh::handleReceive(uint8_t *mac, uint8_t *data, uint8_t len) {
+  // Handle raw PING/PONG for channel discovery
+  if (len == 4 && memcmp(data, "PING", 4) == 0) {
+    if (_role == MESH_COORDINATOR) {
+      uint8_t pongData[] = {0x50, 0x4F, 0x4E, 0x47}; // "PONG"
+      esp_now_send(_broadcastMac, pongData, 4);
+    }
+    return;
+  }
+  if (len == 4 && memcmp(data, "PONG", 4) == 0) {
+    _pongReceived = true;
+    memcpy(_coordinatorMac, mac, 6); 
+    return;
+  }
+
   if (len < sizeof(MeshPacket)) return;
   MeshPacket* p = (MeshPacket*)data;
 

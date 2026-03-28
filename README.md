@@ -1,3 +1,8 @@
+## Need a GUI  and more examples?
+**For more examples (Lilygo, esp32, esp8266, etc) please check out https://github.com/javastraat/UniversalMesh-Gui**
+
+---
+
 # UniversalMesh (v1.1.0)
 
 A lightweight, Layer-3 mesh networking protocol built on top of ESP-NOW for ESP32 and ESP8266. UniversalMesh eliminates the need for per-device Wi-Fi credentials by utilizing a single **Coordinator** that acts as a transparent bridge between your low-power RF mesh and your MQTT broker.
@@ -77,7 +82,7 @@ Use PlatformIO to build and upload to your specific hardware.
 pio run -e coordinator_c6 -t upload -t monitor
 
 # Build a generic ESP32 sensor node
-pio run -e sensor_node_esp32 -t upload -t monitor
+pio run -e sensor_node_c6 -t upload -t monitor
 ```
 
 ## ⚙️ Development Stack

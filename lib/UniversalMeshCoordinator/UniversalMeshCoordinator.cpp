@@ -146,9 +146,12 @@ void UniversalMeshCoordinator::handleMeshMessage(MeshPacket* packet, uint8_t* se
     }
     
     else if (packet->type == MESH_TYPE_PING && packet->payloadLen > 0) {
-        char nodeName[65] = {0};
-        memcpy(nodeName, packet->payload, packet->payloadLen);
-        UM_DEBUG_PRINTF("[DISCOVERY] New Node Joined: %s\n", nodeName);
+        // Safely copy the node name and ensure it's null-terminated
+        char nodeName[65];
+        uint8_t nameLen = (packet->payloadLen < 64) ? packet->payloadLen : 64;
+        memcpy(nodeName, packet->payload, nameLen);
+        nodeName[nameLen] = '\0';
+        UM_DEBUG_PRINTF("[DISCOVERY] New Node Joined: %s (%s)\n", macStr, nodeName);
     }
 }
 

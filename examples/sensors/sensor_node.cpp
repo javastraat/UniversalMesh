@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <WiFi.h>
+#include <ArduinoJson.h>
 #include "UniversalMesh.h"
 
 #ifndef NODE_NAME
@@ -24,6 +25,8 @@ void setup() {
     WiFi.mode(WIFI_STA);
     WiFi.disconnect();
 
+    bool justDiscovered = false;
+
     // 1. DISCOVERY (Only runs on first boot or dropped connection)
     if (!rtcIsConfigured || rtcChannel == 0) {
         Serial.println("[BOOT] Network unknown. Sweeping channels...");
@@ -34,6 +37,7 @@ void setup() {
             mesh.getCoordinatorMac(rtcCoordinatorMac);
             rtcIsConfigured = true;
             Serial.printf("[BOOT] Locked on Channel %d. Saved to RTC.\n", rtcChannel);
+            justDiscovered = true;
         } else {
             Serial.println("[BOOT] Coordinator unreachable.");
             esp_sleep_enable_timer_wakeup(SLEEP_SECONDS * 1000000ULL);
@@ -45,17 +49,28 @@ void setup() {
     if (rtcIsConfigured) {
         mesh.begin(rtcChannel);
         mesh.setCoordinatorMac(rtcCoordinatorMac);
+
+        // If we just discovered the network, send a formal PING with our name
+        // to let the coordinator know we've joined.
+        if(justDiscovered) {
+            Serial.println("[BOOT] Announcing presence to coordinator...");
+            mesh.send(rtcCoordinatorMac, MESH_TYPE_PING, 0x00, (const uint8_t*)NODE_NAME, strlen(NODE_NAME), 4);
+            delay(100); // Brief pause to allow packet to send before sleeping
+        }
         
         // --- Pack Payload ---
-        uint16_t temp = 2250; // 22.50 C
-        uint16_t hum = 4500;  // 45.00 %
-        uint8_t payload[4] = {
-            (uint8_t)(temp >> 8), (uint8_t)(temp & 0xFF),
-            (uint8_t)(hum >> 8),  (uint8_t)(hum & 0xFF)
-        };
+        float temp = 22.50; // 22.50 C
+        float hum = 45.00;  // 45.00 %
+        
+        JsonDocument doc;
+        doc["temp"] = temp;
+        doc["hum"] = hum;
+
+        String jsonOutput;
+        serializeJson(doc, jsonOutput);
         
         // --- Send via UniversalMesh Core ---
-        if (mesh.sendToCoordinator(APP_ID_TEMP_HUMID, payload, sizeof(payload))) {
+        if (mesh.sendToCoordinator(APP_ID_TEMP_HUMID, jsonOutput)) {
             Serial.println("[TX] Telemetry sent successfully!");
         } else {
             Serial.println("[TX] Delivery failed. Wiping RTC state.");

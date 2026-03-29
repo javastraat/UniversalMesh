@@ -3,7 +3,7 @@
 
 ---
 
-# UniversalMesh (v0.1.0_alpha)
+# UniversalMesh (v1.0.0)
 
 A lightweight, Layer-3 mesh networking protocol built on top of ESP-NOW for ESP32 and ESP8266. UniversalMesh eliminates the need for per-device Wi-Fi credentials by utilizing a single **Coordinator** that acts as a transparent bridge between your low-power RF mesh and your MQTT broker.
 
@@ -14,6 +14,8 @@ A lightweight, Layer-3 mesh networking protocol built on top of ESP-NOW for ESP3
 * **Auto-Relay & Self-Healing:** Every powered node acts as a TTL-based repeater to extend range. Packets dynamically find their path without fixed routing tables.
 * **De-duplication:** Built-in Message ID tracking prevents broadcast storms.
 * **Modular Architecture:** Clean separation between the RF-layer (`UniversalMesh`) and the IT-layer (`UniversalMeshCoordinator`).
+* **Hardware AES-128 Encryption:** Opt-in secure communications using the ESP32's native hardware crypto-engine.
+* **Auto-NTP Timestamping:** The Coordinator automatically syncs with `pool.ntp.org` and seamlessly injects precise UNIX timestamps (`"ts": 17...`) into incoming Node JSON payloads.
 
 ---
 

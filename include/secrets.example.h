@@ -9,4 +9,7 @@
 #define MQTT_USER "your_ha_username"
 #define MQTT_PASS "your_ha_password"
 
+#define MESH_SECURE_KEY "MySuperSecretKey" // Must be max 16 chars!
+
+
 #endif

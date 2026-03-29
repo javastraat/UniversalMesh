@@ -4,6 +4,10 @@
 #include "UniversalMeshCoordinator.h"
 #include "secrets.h"
 
+#ifndef MESH_SECURE_KEY
+#define MESH_SECURE_KEY "My16CharKey1234!" // Exactly 16 characters!
+#endif
+
 // ESP32-C6 DevKitC-1 default RGB LED pin
 #define PIN 8 
 Adafruit_NeoPixel strip(1, PIN, NEO_GRB + NEO_KHZ800);
@@ -28,7 +32,7 @@ void setup() {
     delay(3000); 
 
     Serial.println("\n\n======================================");
-    Serial.println("--- UniversalMesh Bridge Booting ---");
+    Serial.println("--- UniversalMesh SECURE Bridge Booting ---");
     Serial.println("======================================\n");
 
     // 1. Connect to Wi-Fi
@@ -50,10 +54,14 @@ void setup() {
     Serial.printf("[WIFI] Operating on Channel: %d\n", currentWifiChannel);
 
     setLedColor(0, 0, 255); // BLUE: Starting Bridge
-    String clientId = "MeshBridge-" + String(random(0xffff), HEX);
+    String clientId = "MeshBridge-Secure-" + String(random(0xffff), HEX);
  
+    // ---> ENABLE AES ENCRYPTION <---
+    bridge.setNetworkKey(MESH_SECURE_KEY);
+
     if (bridge.begin(currentWifiChannel, MQTT_BROKER, MQTT_PORT, clientId.c_str(), MQTT_USER, MQTT_PASS)) {
         setLedColor(0, 255, 0); // GREEN: Bridge is online and listening!
+        Serial.println("[BRIDGE] Secure Mode Enabled.");
     } else {
         setLedColor(255, 0, 0); // RED: Bridge failed to initialize
     }

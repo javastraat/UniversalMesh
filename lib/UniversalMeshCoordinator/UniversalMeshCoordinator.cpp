@@ -1,4 +1,5 @@
 #include "UniversalMeshCoordinator.h"
+#include <time.h>
 
 UniversalMeshCoordinator* UniversalMeshCoordinator::_instance = nullptr;
 
@@ -27,6 +28,9 @@ bool UniversalMeshCoordinator::begin(uint8_t channel, const char* mqttBroker, ui
 
     _mqtt.setServer(_brokerIp.c_str(), _brokerPort);
     _mqtt.setBufferSize(256); 
+
+    // Start background NTP sync (UTC time)
+    configTime(0, 0, "pool.ntp.org");
 
     if (_mesh.begin(channel, MESH_COORDINATOR)) {
         _mesh.onReceive(meshCallbackWrapper);
@@ -96,6 +100,7 @@ void UniversalMeshCoordinator::handleMeshMessage(MeshPacket* packet, uint8_t* se
         safePayload[safeLen] = '\0'; // Explicit null termination
         
         String textPayload(safePayload);
+        injectTimestamp(textPayload);
 
         if (_mqtt.connected()) _mqtt.publish(topic.c_str(), textPayload.c_str());
         UM_DEBUG_PRINTF("[DATA] Received from %s: %s\n", macStr, textPayload.c_str());
@@ -130,6 +135,7 @@ void UniversalMeshCoordinator::handleMeshMessage(MeshPacket* packet, uint8_t* se
             safePayload[safeLen] = '\0'; // Explicit null termination
             
             String textPayload(safePayload);
+            injectTimestamp(textPayload);
 
             if (_mqtt.connected()) _mqtt.publish(topic.c_str(), textPayload.c_str());
             UM_DEBUG_PRINTF("[SECURITY] Decrypted payload from %s: %s\n", macStr, textPayload.c_str());
@@ -197,4 +203,20 @@ bool UniversalMeshCoordinator::decryptPayload(MeshPacket* packet, uint8_t* outpu
     *outputLen = packet->payloadLen;
     mbedtls_aes_free(&aes);
     return true; 
+}
+
+// Smart middleware helper: Injects a UNIX timestamp without heavy JSON deserialization
+void UniversalMeshCoordinator::injectTimestamp(String& payload) {
+    time_t now;
+    time(&now);
+    
+    // If time > 1600000000 (Sept 2020), we know NTP has successfully synced
+    if (now > 1600000000) { 
+        if (payload.startsWith("{") && payload.endsWith("}")) {
+            payload.remove(payload.length() - 1); // Remove trailing '}'
+            payload += ",\"ts\":";
+            payload += String((unsigned long)now);
+            payload += "}";
+        }
+    }
 }

@@ -44,6 +44,7 @@ class UniversalMeshCoordinator {
 
     String bytesToHex(const uint8_t* data, uint8_t len);
     bool decryptPayload(MeshPacket* packet, uint8_t* output, uint8_t* outputLen);
+    void injectTimestamp(String& payload);
 
     String _brokerIp;
     uint16_t _brokerPort;

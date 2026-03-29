@@ -59,12 +59,14 @@ void setup() {
         }
         
         // --- Pack Payload ---
-        float temp = 22.50; // 22.50 C
-        float hum = 45.00;  // 45.00 %
+        float cpuTemp = 0.0;
+        #if defined(ESP32)
+            cpuTemp = temperatureRead(); // Native ESP32 internal CPU temp
+        #endif
         
         JsonDocument doc;
-        doc["temp"] = temp;
-        doc["hum"] = hum;
+        doc["cpu_temp"] = cpuTemp;
+        doc["uptime_ms"] = millis(); // Helpful diagnostic to see wake time
 
         String jsonOutput;
         serializeJson(doc, jsonOutput);

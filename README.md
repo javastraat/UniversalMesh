@@ -32,7 +32,7 @@ The protocol relies on a highly efficient packed struct for routing and payload 
 | `srcMac` | 6 | Originating node's MAC address. |
 | `appId` | 1 | Application multiplexer (e.g., `0x01` Text, `0x03` Sensor Data). |
 | `payloadLen`| 1 | Length of the actual payload. |
-| `payload` | 64 | Raw data buffer for the application. |
+| `payload` | 200 | Raw data buffer for the application. (ArduinoJson friendly!) |
 
 ---
 ## Message Types
